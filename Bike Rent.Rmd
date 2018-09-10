@@ -1,0 +1,365 @@
+
+```{r}
+# Load Libraries
+rm(list = ls())
+# install.packages("corrgram", lib="/Library/Frameworks/R.framework/Versions/3.4/Resources/library")
+# install.packages("sampling", lib="/Library/Frameworks/R.framework/Versions/3.4/Resources/library")
+# install.packages("DataCombine", lib="/Library/Frameworks/R.framework/Versions/3.4/Resources/library")
+# install.packages("caret", lib="/Library/Frameworks/R.framework/Versions/3.4/Resources/library")
+#install.packages(c("forcats", "DataExplorer", "ggthemes","grid","gridExtra","factoextra","FactoMineR"))
+#install.packages("DataExplorer", lib="/Library/Frameworks/R.framework/Versions/3.4/Resources/library")
+#install.packages("psych")
+library(psych)
+library(ggplot2)
+library(corrgram)
+library(sampling)
+library(corrgram)
+library(class)
+library(e1071)
+library(caret)
+library(DataCombine)
+library(caret)
+library(randomForest)
+library(inTrees)
+library(C50)
+library(dplyr)
+library(forcats)
+library(plyr)
+library(DataExplorer)
+library(ggthemes)
+library(grid) 
+library(gridExtra) 
+library(factoextra) 
+library(FactoMineR) 
+```
+
+
+```{r}
+# Import Data
+data = read.csv('day.csv', header = TRUE) 
+data = data.frame(data)
+data_org = data
+# list of Columns 
+col = colnames(train)
+# list of numeric and categorical columns
+num_var = c('temp', 'atemp', 'hum', 'windspeed', 'casual', 'casistered', 'cnt')
+cat_var = c('instant', 'season', 'yr', 'mnth', 'holiday', 'weekday', 'workingday', 'weathersit')
+```
+
+```{r}
+str(data) # Work.load.Average.day is 'Factor Variable'
+summary(data)
+```
+```{r}
+
+# Convert catefory variables from numeric to factor type
+for (i in cat_var) {
+    data[,i]=as.factor((data[,i]))
+}
+
+numeric_index = sapply(data,is.numeric) 
+numeric_data = data[,numeric_index]
+cnames_n = colnames(numeric_data)
+
+factor_index = sapply(data, is.factor)
+factor_data = data[,factor_index]
+cnames_f = colnames(factor_data)
+```
+
+
+```{r}
+multi.hist(data[,numeric_index], main = NA, dcol = c("blue", "red"), dlty = c("solid", "solid"), bcol = "linen")
+```
+
+```{r}
+pairs.panels(data)
+```
+
+```{r}
+# Missing Value Analysis
+# Create datframe with missing percentage
+missing_val = data.frame(apply(data,2,function(x){sum(is.na(x))}))
+# Convert row names into column
+missing_val$Columns = row.names(missing_val)
+row.names(missing_val) = NULL
+# Rename the variable name
+names(missing_val)[1] = 'missing_percentage'
+#Calculate percentage
+missing_val$missing_percentage = (missing_val$missing_percentage/nrow(missing_val))*100
+# Arrange in descending order
+missing_val = missing_val[order(-missing_val$missing_percentage),]
+#Rearranging the columns
+missing_val = missing_val[,c(2,1)]
+#View(missing_val)
+```
+
+```{r}
+boxplot(data)
+```
+
+
+```{r}
+for (i in 1:length(cnames_n)){
+ assign(paste0("plot",i), ggplot(aes_string(y = (cnames_n[i]), x = "cnt"), data =subset(data))+
+ stat_boxplot(geom = "errorbar", width = 0.5) +
+ geom_boxplot(outlier.colour="red", fill = "blue" ,outlier.shape=18,
+ outlier.size=1, notch=FALSE) +
+ theme(legend.position="bottom")+
+ labs(y=cnames_n[i],x="cnt")+
+ ggtitle(paste("Box plot of responded for",cnames_n[i])))
+}
+#boxplot of outliers
+gridExtra::grid.arrange(plot1,plot2,plot3,ncol=3)
+gridExtra::grid.arrange(plot4,plot5,plot6,ncol=3)
+gridExtra::grid.arrange(plot7,ncol=3)
+```
+
+```{r}
+# Capping and Flooring Outliers
+for (i in cnames_n) {
+  percentile = quantile(data[i], c(0.01, 0.99),na.rm = TRUE)
+  data[i][data[i]<percentile[1]]=percentile[1]
+  data[i][data[i]>percentile[2]]=percentile[2]
+}
+
+# so we have to update total count variables as it is sum of casual and registered users
+data['cnt'] = data['casual']+data['registered']
+```
+
+```{r}
+corrgram(data[-1], order = F, upper.panel = panel.pie, text.panel = panel.txt, main = 'CorrelationPlot')
+symnum(cor(numeric_data))
+high_corr =  findCorrelation(cor(numeric_data), cutoff=0.99)
+```
+```{r}
+#removing highly correlated column 'atemp' and 'instant' & 'dteday'
+data = subset(data, select = -c(instant,atemp,dteday))
+```
+
+```{r}
+#install.packages("dummies", lib="/Library/Frameworks/R.framework/Versions/3.4/Resources/library")
+cat_var = c('season', 'yr', 'mnth', 'holiday', 'weekday', 'workingday','weathersit')
+library(dummies)
+for (i in cat_var){
+  temp = data.frame(dummy(data[,i]))
+  data = cbind(data,temp)
+  data[,i] = NULL
+}
+```
+
+```{r}
+new_data = subset(data, select = -c(cnt,registered,casual))
+cas_data = cbind(data[,'casual'],new_data)
+reg_data = cbind(data[,'registered'],new_data)
+
+colnames(cas_data) <- c("casual", colnames(new_data))
+colnames(reg_data) <- c("registered", colnames(new_data))
+```
+
+
+```{r}
+#install.packages('DAAG')
+library(DAAG)
+#feature selection using boruta package
+install.packages("Boruta", lib="/Library/Frameworks/R.framework/Versions/3.4/Resources/library")
+library(Boruta) 
+cas_boruta.train=Boruta(casual~., data = cas_data, doTrace = 2) 
+cas_selected_features=getSelectedAttributes(cas_boruta.train, withTentative = F)
+set.seed(123)
+cas_formula=as.formula(paste("casual~",paste(cas_selected_features,collapse = "+")))
+
+
+reg_boruta.train=Boruta(registered~., data = reg_data, doTrace = 2) 
+reg_selected_features=getSelectedAttributes(reg_boruta.train, withTentative = F)
+reg_formula=as.formula(paste("registered~",paste(reg_selected_features,collapse = "+")))
+
+```
+```{r}
+# train and test sample
+X_train_reg = reg_data[1:485,2:36]
+X_test_reg=reg_data[486:731,2:36]
+y_train_reg=reg_data[1:485,1]
+y_test_reg=reg_data[486:731,1]
+
+X_train_cas = cas_data[1:485,2:36]
+X_test_cas=cas_data[486:731,2:36]
+y_train_cas=cas_data[1:485,1]
+y_test_cas=cas_data[486:731,1]
+
+y_test_count= data[486:731,6]
+```
+
+
+```{r}
+# Cross-Validation
+train_control <- trainControl(method = "repeatedcv",number = 10)
+#options(warn=-1)
+
+
+# model prediction function
+model_pred  <- function(method_model) {
+  cas_model <- train(cas_formula,data = cas_data,metric="RMSE", method=method_model,trControl=train_control)
+  cas_pred = predict(cas_model,cas_data[486:731,])
+  print('Casual')
+  #print(cas_model)
+  print(regr.eval(y_test_cas, cas_pred, stats = c('rmse')))
+  
+  reg_model <- train(reg_formula,data = reg_data,metric="RMSE", method=method_model,trControl=train_control)
+  reg_pred=predict(reg_model,reg_data[486:731,])
+  print('Registered')
+  #print(reg_model)
+  print(regr.eval(y_test_reg, reg_pred, stats = c('rmse')))
+  
+  cnt_pred = cas_pred + reg_pred
+  print('Count')
+  print(regr.eval(y_test_count,cnt_pred, stats = c('rmse')))
+}
+  
+```
+
+```{r}
+install.packages("DMwR", lib="/Library/Frameworks/R.framework/Versions/3.4/Resources/library")
+library(DMwR)
+# Linear Model
+model_pred('lm')
+```
+
+```{r}
+#Random Forest
+model_pred('rf')
+```
+
+```{r}
+#Decision Tree
+model_pred('rpart')
+```
+```{r}
+# Ridge
+model_pred('ridge')
+```
+
+```{r}
+# Lasso
+model_pred('lasso')
+```
+```{r}
+# Lars
+model_pred('lars')
+```
+
+```{r}
+getSelectedAttributes(cas_boruta.train, withTentative = F)
+boruta.df <- attStats(cas_boruta.train)
+class(boruta.df)
+print(boruta.df)
+```
+
+```{r}
+# PCA
+## Registered Customers
+
+prin_comp <- prcomp(reg_data[1:485,]) #outputs the mean of variables 
+prin_comp$center
+#outputs the standard deviation of variables prin_comp$scale
+dim(prin_comp$x)
+biplot(prin_comp, scale = 0)
+#compute standard deviation of each principal component 
+std_dev = prin_comp$sdev
+#compute variance
+pr_var = std_dev^2
+#proportion of variance explained
+prop_varex =pr_var/sum(pr_var)
+#scree plot
+plot(prop_varex, xlab = "Principal Component",ylab = "Proportion of Variance Explained", type = "b")
+#cumulative scree plot
+plot(cumsum(prop_varex), xlab = "Principal Component",ylab = "Cumulative Proportion of Variance Explained",type = "b")
+#add a training set with principal components
+reg_train_data = data.frame(registered = reg_data[1:485,'registered'], prin_comp$x)
+#we are interested in first 25 PCAs as we have seen from the graph # and the target variable ,so in total 41(including target variable)
+reg_train_data = reg_train_data[,1:26]
+#transform test into PCA
+reg_test_data=predict(prin_comp, newdata = reg_data[486:731,]) 
+reg_test_data= as.data.frame(reg_test_data)
+#select the first 40 components 
+reg_test_data =  reg_test_data[,1:25] 
+```
+
+```{r}
+## Casual Customers
+
+prin_comp <- prcomp(cas_data[1:485,]) #outputs the mean of variables 
+prin_comp$center
+#outputs the standard deviation of variables prin_comp$scale
+dim(prin_comp$x)
+biplot(prin_comp, scale = 0)
+#compute standard deviation of each principal component 
+std_dev = prin_comp$sdev
+#compute variance
+pr_var = std_dev^2
+#proportion of variance explained
+prop_varex =pr_var/sum(pr_var)
+#scree plot
+plot(prop_varex, xlab = "Principal Component",ylab = "Proportion of Variance Explained", type = "b")
+#cumulative scree plot
+plot(cumsum(prop_varex), xlab = "Principal Component",ylab = "Cumulative Proportion of Variance Explained",type = "b")
+#add a training set with principal components
+cas_train_data = data.frame(casual = cas_data[1:485,'casual'], prin_comp$x)
+#we are interested in first 25 PCAs as we have seen from the graph # and the target variable ,so in total 41(including target variable)
+cas_train_data = cas_train_data[,1:26]
+#transform test into PCA
+cas_test_data=predict(prin_comp, newdata = cas_data[486:731,]) 
+cas_test_data= as.data.frame(cas_test_data)
+#select the first 40 components 
+cas_test_data= cas_test_data[,1:25] 
+```
+
+
+```{r}
+pca_model_pred  <- function(method_model) {
+  cas_model <- train(casual~.,data = cas_train_data,metric="RMSE", method=method_model,trControl=train_control)
+  cas_pred = predict(cas_model,cas_test_data)
+  print('Casual')
+  #print(cas_model)
+  print(regr.eval(cas_pred, cas_data[486:731,1], stats = c('rmse')))
+  
+  reg_model <- train(registered~.,data = reg_train_data,metric="RMSE", method=method_model,trControl=train_control)
+  reg_pred = predict(reg_model,reg_test_data)
+  print('Registered')
+  #print(reg_model)
+  print(regr.eval(reg_pred, reg_data[486:731,1], stats = c('rmse')))
+  
+  cnt_pred = cas_pred + reg_pred
+  print('Count')
+  print(regr.eval(cnt_pred, data[486:731,6],stats = c('rmse')))
+}
+```
+
+```{r}
+# Linear Model
+pca_model_pred('lm')
+```
+
+```{r}
+#Random Forest
+pca_model_pred('rf')
+```
+
+```{r}
+#Decision Tree
+pca_model_pred('rpart')
+```
+
+```{r}
+# Ridge
+pca_model_pred('ridge')
+```
+
+```{r}
+# Lasso
+pca_model_pred('lasso')
+```
+
+```{r}
+# Lars
+pca_model_pred('lars')
+```
